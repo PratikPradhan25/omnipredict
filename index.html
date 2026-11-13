@@ -84,15 +84,41 @@
       background: rgba(0,0,0,0.2);
     }
     .slot .who { font-size: 0.7rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; display: flex; justify-content: space-between; }
-    .suits { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+    .suit-board { display: flex; flex-direction: column; gap: 8px; }
+    .suit-row-wrap { min-width: 0; }
+    .suit-row-label { font-size: 0.62rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+    .suit-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
     .suit {
-      border-radius: 12px; border: 1px solid #333; background: #141416; color: #eee;
-      padding: 12px 0 8px; font-size: 1.45rem; line-height: 1; text-align: center;
+      border-radius: 10px; border: 1px solid #333; background: #141416; color: #eee;
+      padding: 8px 0 6px; font-size: 1.2rem; line-height: 1; text-align: center;
+      min-width: 0; width: 100%;
     }
-    .suit span { display: block; font-size: 0.58rem; letter-spacing: 0.06em; margin-top: 2px; }
-    .suit.hearts, .suit.diamonds { color: var(--red); }
-    .suit.on.hearts, .suit.on.diamonds { background: #3a1014; box-shadow: 0 0 0 2px var(--red); }
-    .suit.on.clubs, .suit.on.spades { background: #222228; box-shadow: 0 0 0 2px #ccc; }
+    .suit span { display: block; font-size: 0.5rem; letter-spacing: 0.04em; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .suit.red-ink { color: var(--red); border-color: rgba(255,59,78,0.35); }
+    .suit.red-ink.on { background: #3a1014; box-shadow: 0 0 0 2px var(--red); }
+    .suit.black-ink { color: #e8e8ee; border-color: #555; }
+    .suit.black-ink.on { background: #222228; box-shadow: 0 0 0 2px #ccc; }
+    .newgame-row { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+    .next-result { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+    .toast {
+      margin-top: 10px; padding: 8px 10px; border-radius: 10px;
+      background: #14241e; border: 1px solid rgba(61,255,196,0.35);
+      color: var(--teal); font-size: 0.85rem; font-weight: 600;
+    }
+    .toast.off { display: none; }
+    .modal-back {
+      display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.65);
+      z-index: 40; align-items: flex-end; justify-content: center;
+      padding: 16px 16px calc(16px + var(--safe-b));
+    }
+    .modal-back.on { display: flex; }
+    .modal {
+      background: #121a16; border: 1px solid var(--line); border-radius: 16px;
+      padding: 16px; width: 100%; max-width: 420px;
+    }
+    .modal h3 { color: var(--gold2); font-size: 1.05rem; margin-bottom: 8px; }
+    .modal .actions { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+    .modal .actions button { width: 100%; }
     .map { font-size: 0.75rem; margin-top: 6px; min-height: 1.1em; }
     /* log buttons */
     .big2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 8px 0 12px; }
@@ -138,7 +164,7 @@
     <section class="tab on" id="tab-predict" data-tab="predict">
       <div class="card">
         <h2>Last colours (3–5)</h2>
-        <p class="small">Tap the suits you can see, oldest first. Hearts and diamonds are RED; clubs and spades are BLACK. Unused slots stay empty at the end.</p>
+        <p class="small">Tap the last 3–5 cards, oldest first. This game shows all four suits in both colours — the button colour is what gets recorded. Leave unused slots empty at the end.</p>
         <div class="slots" id="slots"></div>
         <div class="row" style="margin-top:12px">
           <button type="button" class="primary" id="btnPredict" data-testid="predict">Predict next colour</button>
@@ -148,6 +174,16 @@
       <div class="card">
         <h2>Master panel</h2>
         <div id="predictPanel"><p class="small">Enter at least three suits, then Predict.</p></div>
+        <div class="next-result" id="nextResult" data-testid="what-came-next">
+          <h2>What came next?</h2>
+          <p class="small">Tap the actual result after the prediction is shown. It is scored against the already-locked call, saved to the Log, and the next prediction appears above so you can keep going on this screen.</p>
+          <div class="big2">
+            <button type="button" id="btnPredictRed" data-testid="predict-result-red">RED</button>
+            <button type="button" id="btnPredictBlack" data-testid="predict-result-black">BLACK</button>
+          </div>
+          <div class="suit-board" id="predictResultSuits" style="margin-top:8px"></div>
+          <div id="predictToast" class="toast off" data-testid="predict-toast" role="status"></div>
+        </div>
       </div>
     </section>
 
@@ -163,18 +199,16 @@
         <div id="lockedPreview" class="small">The call below is locked before you enter the result and will not be edited afterwards.</div>
       </div>
       <div class="card">
+        <div class="newgame-row">
+          <button type="button" id="btnNewGame" data-testid="new-game">New game</button>
+        </div>
         <h2>Enter the actual result</h2>
         <div class="big2">
           <button type="button" id="btnRed" data-testid="log-red">RED</button>
           <button type="button" id="btnBlack" data-testid="log-black">BLACK</button>
         </div>
-        <p class="small">Or record the exact suit (still stored as red or black):</p>
-        <div class="suits" style="margin-top:8px">
-          <button type="button" class="suit hearts" data-log-suit="H">♥<span>Hearts</span></button>
-          <button type="button" class="suit diamonds" data-log-suit="D">♦<span>Diamonds</span></button>
-          <button type="button" class="suit clubs" data-log-suit="C">♣<span>Clubs</span></button>
-          <button type="button" class="suit spades" data-log-suit="S">♠<span>Spades</span></button>
-        </div>
+        <p class="small">Or record the exact card. Colour comes from the button row, not from the usual suit colour. All four suits exist in red and in black.</p>
+        <div class="suit-board" id="logSuits" style="margin-top:8px"></div>
         <div class="row"><label class="small"><input type="checkbox" id="useClock" checked /> timestamp each result</label></div>
         <div id="streak" class="small" style="margin-top:8px"></div>
       </div>
@@ -214,7 +248,7 @@
           <label class="small">Import CSV <input type="file" id="fileImport" accept=".csv,text/csv,text/plain" /></label>
         </div>
         <button type="button" id="btnReset" style="width:100%;margin-top:8px">Reset log…</button>
-        <p class="small" style="margin-top:8px">Storage key <code>omnipredict.log.v1</code>, on this device only.</p>
+        <p class="small" style="margin-top:8px">Current game: <code>omnipredict.log.v1</code>. Past games are archived in <code>omnipredict.archive.v1</code> on this device. <span id="archiveCount"></span></p>
       </div>
       <div class="card">
         <h2>Add to iPhone Home Screen</h2>
@@ -226,6 +260,17 @@
       </div>
     </section>
   </main>
+  <div class="modal-back" id="newGameModal" role="dialog" aria-modal="true" aria-labelledby="newGameTitle">
+    <div class="modal">
+      <h3 id="newGameTitle">Start a new game?</h3>
+      <p class="small">The current log will be archived on this phone so nothing is silently lost. Predictions will start fresh.</p>
+      <div class="actions">
+        <button type="button" class="primary" id="btnNewExport" data-testid="new-game-export">Export CSV first, then start new</button>
+        <button type="button" id="btnNewConfirm" data-testid="new-game-confirm">Start new game</button>
+        <button type="button" id="btnNewCancel" data-testid="new-game-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
   <nav class="tabs" role="tablist">
     <button type="button" class="on" data-open="predict">Predict</button>
     <button type="button" data-open="log">Log</button>
@@ -2401,17 +2446,50 @@ export function omniLockedRecord(analysis, now = Date.now()) {
   globalThis.OMNI = E;
 
   const KEY = "omnipredict.log.v1";
+  const ARCHIVE_KEY = "omnipredict.archive.v1";
+  const PIPS = [
+    { pip: "♥", name: "Hearts", letter: "H" },
+    { pip: "♦", name: "Diamonds", letter: "D" },
+    { pip: "♣", name: "Clubs", letter: "C" },
+    { pip: "♠", name: "Spades", letter: "S" },
+  ];
   const SUITS = [
-    { id: "H", pip: "♥", name: "Hearts", color: "R", cls: "hearts" },
-    { id: "D", pip: "♦", name: "Diamonds", color: "R", cls: "diamonds" },
-    { id: "C", pip: "♣", name: "Clubs", color: "B", cls: "clubs" },
-    { id: "S", pip: "♠", name: "Spades", color: "B", cls: "spades" },
+    ...PIPS.map((p) => ({ id: "R" + p.pip, pip: p.pip, name: p.name, color: "R", cls: "red-ink", letter: p.letter })),
+    ...PIPS.map((p) => ({ id: "B" + p.pip, pip: p.pip, name: p.name, color: "B", cls: "black-ink", letter: p.letter })),
   ];
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const pct = (x, d = 1) => (x == null || !Number.isFinite(x) ? "—" : (x * 100).toFixed(d) + "%");
   const fp = (p) => (p == null || !Number.isFinite(p) ? "—" : p < 0.001 ? p.toExponential(2) : p.toFixed(3));
   const col = (c) => (c === "R" ? "RED" : c === "B" ? "BLACK" : "—");
+  function suitPip(suit) {
+    if (!suit) return "";
+    const legacy = { H: "♥", D: "♦", C: "♣", S: "♠" };
+    if (legacy[suit]) return legacy[suit];
+    const m = String(suit).match(/[♥♦♣♠]/);
+    if (m) return m[0];
+    const last = String(suit).slice(-1).toUpperCase();
+    return legacy[last] || "";
+  }
+  function formatActual(e) {
+    const pip = suitPip(e && e.suit);
+    return col(e.color) + (pip ? " " + pip : "");
+  }
+  function loadArchive() {
+    try {
+      const x = JSON.parse(localStorage.getItem(ARCHIVE_KEY) || "[]");
+      return Array.isArray(x) ? x : [];
+    } catch {
+      return [];
+    }
+  }
+  function archiveCurrentGame() {
+    if (!log.length) return 0;
+    const arch = loadArchive();
+    arch.push({ endedAt: Date.now(), n: log.length, entries: log.slice() });
+    localStorage.setItem(ARCHIVE_KEY, JSON.stringify(arch));
+    return arch.length;
+  }
 
   let log = load();
   let pending = null;
@@ -2495,6 +2573,38 @@ export function omniLockedRecord(analysis, now = Date.now()) {
     return { colors: filled };
   }
 
+  function makeSuitButton(s, selected, attrs) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "suit " + s.cls + (selected ? " on" : "");
+    b.dataset.suit = s.id;
+    b.dataset.color = s.color;
+    b.dataset.pip = s.pip;
+    Object.entries(attrs || {}).forEach(([k, v]) => b.setAttribute(k, v));
+    b.setAttribute("aria-label", (s.color === "R" ? "Red" : "Black") + " " + s.name);
+    b.innerHTML = `${s.pip}<span>${s.name}</span>`;
+    return b;
+  }
+  function fillSuitBoard(el, selectedId, onPick) {
+    el.innerHTML = "";
+    [
+      { color: "R", label: "Red", list: SUITS.filter((s) => s.color === "R") },
+      { color: "B", label: "Black", list: SUITS.filter((s) => s.color === "B") },
+    ].forEach((row) => {
+      const wrap = document.createElement("div");
+      wrap.className = "suit-row-wrap";
+      wrap.innerHTML = `<div class="suit-row-label">${row.label}</div>`;
+      const grid = document.createElement("div");
+      grid.className = "suit-row";
+      row.list.forEach((s) => {
+        const b = makeSuitButton(s, selectedId === s.id);
+        b.addEventListener("click", () => onPick(s, b));
+        grid.appendChild(b);
+      });
+      wrap.appendChild(grid);
+      el.appendChild(wrap);
+    });
+  }
   function renderSlots() {
     const labels = ["1 · oldest of this window", "2", "3", "4", "5 · newest"];
     $("slots").innerHTML = "";
@@ -2502,25 +2612,27 @@ export function omniLockedRecord(analysis, now = Date.now()) {
       const wrap = document.createElement("div");
       wrap.className = "slot";
       const su = SUITS.find((x) => x.id === val);
-      const map = su ? (su.color === "R" ? "Maps to RED" : "Maps to BLACK") : "Empty";
-      wrap.innerHTML = `<div class="who"><span>Slot ${labels[i]}</span><span>${val ? su.pip + " " + su.name : "—"}</span></div>
-        <div class="suits"></div>
+      const map = su ? ((su.color === "R" ? "RED" : "BLACK") + " " + su.pip) : "Empty";
+      wrap.innerHTML = `<div class="who"><span>Slot ${labels[i]}</span><span>${val ? (su.color === "R" ? "RED" : "BLACK") + " " + su.pip : "—"}</span></div>
+        <div class="suit-board"></div>
         <div class="map ${su ? (su.color === "R" ? "r" : "k") : ""}">${map}</div>`;
-      const grid = wrap.querySelector(".suits");
-      SUITS.forEach((s) => {
-        const b = document.createElement("button");
-        b.type = "button";
-        b.className = "suit " + s.cls + (val === s.id ? " on" : "");
-        b.dataset.slot = String(i);
-        b.dataset.suit = s.id;
-        b.innerHTML = `${s.pip}<span>${s.name}</span>`;
-        b.addEventListener("click", () => {
-          slots[i] = slots[i] === s.id ? null : s.id;
-          renderSlots();
-        });
-        grid.appendChild(b);
+      const board = wrap.querySelector(".suit-board");
+      fillSuitBoard(board, val, (s) => {
+        slots[i] = slots[i] === s.id ? null : s.id;
+        renderSlots();
       });
+      // tag predict buttons with data-slot for tests
+      board.querySelectorAll("[data-suit]").forEach((b) => { b.dataset.slot = String(i); });
       $("slots").appendChild(wrap);
+    });
+  }
+  function renderLogSuits() {
+    fillSuitBoard($("logSuits"), null, (s) => {
+      append(s.color, s.id);
+      refresh();
+    });
+    $("logSuits").querySelectorAll("[data-suit]").forEach((b) => {
+      b.setAttribute("data-log-suit", b.getAttribute("data-suit"));
     });
   }
 
@@ -2570,7 +2682,7 @@ export function omniLockedRecord(analysis, now = Date.now()) {
 
     const hist = log.slice().reverse();
     $("histTable").innerHTML = "<table><tr><th>#</th><th>Locked</th><th>P(RED)</th><th>Actual</th><th>Hit?</th><th>Time</th></tr>" +
-      hist.map((e) => `<tr><td>${e.i}</td><td>${e.pred && e.pred.prediction ? col(e.pred.prediction) : "50/50"}</td><td>${pct(e.pred && e.pred.pRed)}</td><td class="${e.color === "R" ? "r" : "k"}">${col(e.color)}${e.suit ? " " + (SUITS.find((s) => s.id === e.suit) || {}).pip : ""}</td><td>${e.correct == null ? "no call" : e.correct ? "✔" : "✘"}</td><td>${e.ts ? new Date(e.ts).toLocaleString() : ""}</td></tr>`).join("") + "</table>";
+      hist.map((e) => `<tr><td>${e.i}</td><td>${e.context ? "context" : (e.pred && e.pred.prediction ? col(e.pred.prediction) : "50/50")}</td><td>${e.context ? "—" : pct(e.pred && e.pred.pRed)}</td><td class="${e.color === "R" ? "r" : "k"}">${esc(formatActual(e))}</td><td>${e.context ? "context" : e.correct == null ? "no call" : e.correct ? "✔" : "✘"}</td><td>${e.ts ? new Date(e.ts).toLocaleString() : ""}</td></tr>`).join("") + "</table>";
     $("logRecent").innerHTML = $("histTable").innerHTML;
 
     const sh = a.master.shrinkage;
@@ -2584,6 +2696,10 @@ export function omniLockedRecord(analysis, now = Date.now()) {
       ? "<table><tr><th>After n</th><th>SEQ</th><th>MKV</th><th>BAY</th><th>ML</th><th>ANOM</th><th>P shrunk</th></tr>" +
         wh.map((w) => `<tr><td>${w.t}</td><td>${pct(w.weights.sequence)}</td><td>${pct(w.weights.markov)}</td><td>${pct(w.weights.bayesian)}</td><td>${pct(w.weights.ml)}</td><td>${pct(w.weights.anomaly)}</td><td>${pct(w.pShrunk)}</td></tr>`).join("") + "</table>"
       : "No history yet.";
+    const archN = loadArchive().length;
+    const ac = $("archiveCount");
+    if (ac) ac.textContent = archN ? (archN + " past game" + (archN === 1 ? "" : "s") + " archived.") : "No past games archived yet.";
+    if (log.length) renderPanel(a, $("predictPanel"));
   }
 
   // tabs
@@ -2606,21 +2722,94 @@ export function omniLockedRecord(analysis, now = Date.now()) {
     a.lastColours = ctx.colors.join("-");
     a.dataSupportText = E.formatDataSupport(E.dataSupport(seq().length ? seq() : ctx.colors, [3, 4, 5]));
     renderPanel(a, $("predictPanel"));
+    if (!log.length) pending = E.omniLockedRecord(a, Date.now());
   });
   $("btnClearSlots").addEventListener("click", () => { slots = [null, null, null, null, null]; renderSlots(); });
 
   $("btnRed").addEventListener("click", () => { append("R", null); refresh(); });
   $("btnBlack").addEventListener("click", () => { append("B", null); refresh(); });
-  document.querySelectorAll("[data-log-suit]").forEach((b) => {
-    b.addEventListener("click", () => {
-      const su = SUITS.find((s) => s.id === b.getAttribute("data-log-suit"));
-      append(su.color, su.id);
-      refresh();
-    });
-  });
+  $("btnPredictRed").addEventListener("click", () => recordPredictResult("R", null));
+  $("btnPredictBlack").addEventListener("click", () => recordPredictResult("B", null));
 
-  $("btnExport").addEventListener("click", () => {
-    const rows = ["index,color,suit,timestamp_iso,locked_prediction,locked_p_red,correct,master_significant,confidence_band"];
+  function showPredictToast(msg) {
+    const el = $("predictToast");
+    if (!el) return;
+    el.textContent = msg;
+    el.classList.remove("off");
+    clearTimeout(showPredictToast._t);
+    showPredictToast._t = setTimeout(() => el.classList.add("off"), 2800);
+  }
+  function seedContextFromSlots() {
+    if (log.length) return 0;
+    const ctx = contextFromSlots();
+    if (ctx.error) return 0;
+    let n = 0;
+    for (const id of slots) {
+      if (!id) continue;
+      const s = SUITS.find((x) => x.id === id);
+      if (!s) continue;
+      const ts = $("useClock") && $("useClock").checked ? Date.now() : null;
+      log.push({
+        i: log.length + 1,
+        color: s.color,
+        suit: s.id,
+        ts,
+        enteredAt: Date.now(),
+        pred: null,
+        correct: null,
+        context: true,
+      });
+      n++;
+    }
+    if (n) save();
+    return n;
+  }
+  function syncSlotsFromLog() {
+    const recent = log.slice(-5);
+    const next = [null, null, null, null, null];
+    recent.forEach((e, i) => {
+      if (e.suit && SUITS.some((s) => s.id === e.suit)) next[i] = e.suit;
+    });
+    if (recent.length) {
+      slots = next;
+      renderSlots();
+    }
+  }
+  function recordPredictResult(color, suit) {
+    if (!log.length) {
+      const ctx = contextFromSlots();
+      if (ctx.error) {
+        $("predictPanel").innerHTML = `<p class="small">${esc(ctx.error)}</p>`;
+        return;
+      }
+      const colors = ctx.colors || [];
+      if (colors.length) {
+        const a = E.omniAnalyze([], { contextOverride: colors });
+        a.lastColours = colors.join("-");
+        pending = E.omniLockedRecord(a, Date.now());
+        seedContextFromSlots();
+      }
+    }
+    if (!pending) lockNext();
+    append(color, suit);
+    const last = log[log.length - 1];
+    const scoredN = log.filter((e) => !e.context).length;
+    const verdict = last.correct == null ? "no call" : last.correct ? "hit" : "miss";
+    showPredictToast("Logged #" + scoredN + " — " + verdict);
+    syncSlotsFromLog();
+    refresh();
+  }
+  function renderPredictResultSuits() {
+    const board = $("predictResultSuits");
+    if (!board) return;
+    fillSuitBoard(board, null, (s) => recordPredictResult(s.color, s.id));
+    board.querySelectorAll("[data-suit]").forEach((b) => {
+      b.setAttribute("data-predict-result-suit", b.getAttribute("data-suit"));
+    });
+  }
+
+  function exportCsv() {
+    const rows = ["index,color,suit,timestamp_iso,locked_prediction,locked_p_red,correct,master_significant,confidence_band,context"];
     for (const e of log) {
       rows.push([
         e.i, e.color, e.suit || "",
@@ -2630,6 +2819,7 @@ export function omniLockedRecord(analysis, now = Date.now()) {
         e.correct == null ? "" : e.correct ? 1 : 0,
         e.pred && e.pred.significant ? 1 : 0,
         (e.pred && e.pred.confidenceBand) || "",
+        e.context ? 1 : 0,
       ].join(","));
     }
     const blob = new Blob([rows.join("\n")], { type: "text/csv" });
@@ -2637,7 +2827,35 @@ export function omniLockedRecord(analysis, now = Date.now()) {
     a.href = URL.createObjectURL(blob);
     a.download = "omnipredict-log.csv";
     a.click();
-  });
+  }
+  function startNewGame(exportFirst) {
+    if (exportFirst && log.length) exportCsv();
+    const nArch = archiveCurrentGame();
+    log = [];
+    pending = null;
+    slots = [null, null, null, null, null];
+    save();
+    renderSlots();
+    const panel = $("predictPanel");
+    if (panel) panel.innerHTML = `<p class="small">Enter at least three suits, then Predict.</p>`;
+    const toast = $("predictToast");
+    if (toast) { toast.textContent = ""; toast.classList.add("off"); }
+    refresh();
+    return nArch;
+  }
+  function openNewGameModal() {
+    $("newGameModal").classList.add("on");
+  }
+  function closeNewGameModal() {
+    $("newGameModal").classList.remove("on");
+  }
+  $("btnNewGame").addEventListener("click", openNewGameModal);
+  $("btnNewCancel").addEventListener("click", closeNewGameModal);
+  $("newGameModal").addEventListener("click", (ev) => { if (ev.target === $("newGameModal")) closeNewGameModal(); });
+  $("btnNewConfirm").addEventListener("click", () => { closeNewGameModal(); startNewGame(false); });
+  $("btnNewExport").addEventListener("click", () => { closeNewGameModal(); startNewGame(true); });
+
+  $("btnExport").addEventListener("click", exportCsv);
 
   $("fileImport").addEventListener("change", (ev) => {
     const f = ev.target.files && ev.target.files[0];
@@ -2653,8 +2871,40 @@ export function omniLockedRecord(analysis, now = Date.now()) {
         if (c === "RED" || c === "H" || c === "D") c = "R";
         if (c === "BLACK" || c === "C" || c === "S") c = "B";
         if (c !== "R" && c !== "B") return;
-        let suit = (parts[2] || "").trim().toUpperCase();
-        if (!["H", "D", "C", "S"].includes(suit)) suit = null;
+        const rawSuit = (parts[2] || "").trim();
+        let suit = null;
+        if (rawSuit) {
+          const u = rawSuit.toUpperCase();
+          if (["H", "D", "C", "S"].includes(u) && rawSuit.length === 1) suit = u; // legacy
+          else if (/^[RB][♥♦♣♠]$/.test(rawSuit)) suit = rawSuit;
+          else if (/[♥♦♣♠]/.test(rawSuit)) {
+            const pip = rawSuit.match(/[♥♦♣♠]/)[0];
+            const first = rawSuit[0].toUpperCase();
+            suit = ((first === "B") ? "B" : (first === "R") ? "R" : c) + pip;
+          } else if (/^[RB][HDCS]$/i.test(u)) {
+            const pip = { H: "♥", D: "♦", C: "♣", S: "♠" }[u[1]];
+            suit = u[0] + pip;
+          } else {
+            suit = rawSuit;
+          }
+        }
+        const isContext = (parts[9] || "").trim() === "1" || (parts[9] || "").trim().toLowerCase() === "true";
+        if (isContext) {
+          const tsRaw = (parts[3] || "").trim();
+          const ts = tsRaw ? Date.parse(tsRaw) || null : null;
+          log.push({
+            i: log.length + 1,
+            color: c,
+            suit: suit || null,
+            ts,
+            enteredAt: Date.now(),
+            pred: null,
+            correct: null,
+            context: true,
+          });
+          pending = null;
+          return;
+        }
         if (!pending) lockNext();
         append(c, suit);
       });
@@ -2665,13 +2915,9 @@ export function omniLockedRecord(analysis, now = Date.now()) {
   });
 
   $("btnReset").addEventListener("click", () => {
-    if (!log.length) { log = []; save(); refresh(); return; }
-    if (!confirm("Start a new log? The current log will be downloaded as CSV first so it is not lost.")) return;
-    $("btnExport").click();
-    log = [];
-    pending = null;
-    save();
-    refresh();
+    if (!log.length) { log = []; pending = null; save(); refresh(); return; }
+    if (!confirm("Reset the current log? It will be archived on this phone and downloaded as CSV first.")) return;
+    startNewGame(true);
   });
 
   if ("serviceWorker" in navigator) {
@@ -2679,6 +2925,8 @@ export function omniLockedRecord(analysis, now = Date.now()) {
   }
 
   renderSlots();
+  renderLogSuits();
+  renderPredictResultSuits();
   refresh();
   </script>
 </body>

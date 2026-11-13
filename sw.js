@@ -1,5 +1,5 @@
 /* OMNIPREDICT service worker — offline cache of the app shell. */
-const CACHE = "omnipredict-v2";
+const CACHE = "omnipredict-v3";
 const PRECACHE = [
   "./",
   "./index.html",
