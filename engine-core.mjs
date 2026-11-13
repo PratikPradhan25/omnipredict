@@ -1844,7 +1844,9 @@ function engineWeights(metricsMap, ids, eta = OMNI_ETA) {
     const meanB = ((m.brierSum || 0) + 0.25 * OMNI_PRIOR_N) / ((m.brierN || 0) + OMNI_PRIOR_N);
     // Blend log-loss and Brier advantages vs a 50/50 baseline.
     const adv = 0.6 * (meanLL - LOGLOSS_50) + 0.4 * (meanB - 0.25);
-    const w = Math.exp(-eta * adv);
+    let w = Math.exp(-eta * adv);
+    // Down-weight engines that have not beaten a 50/50 log-loss after enough forecasts.
+    if (nLL >= 40 && meanLL >= LOGLOSS_50 - 1e-9) w *= 0.2;
     raw[id] = w;
     sum += w;
   }
@@ -1872,22 +1874,213 @@ function publishedFrom(pShrunk, rawMetrics) {
 }
 
 /**
- * Single O(n) walk-forward pass of the five engines and the master.
+ * Single O(n) walk-forward pass of the engines and the master.
  * Weights at time t use only losses from 0..t-1. Predictions never see y_t.
+ *
+ * Optional opts.suits is a parallel array of suit ids (e.g. "R♣") the same
+ * length as seq. When omitted, the suit specialist does not vote.
  */
-export function omniWalkForward(seq, { snapshotWeightsEvery = 0, contextOverride } = {}) {
+function liveEligible(m) {
+  if (!m || m.n < OMNI_MIN_N_CALL) return false;
+  const ci = wilsonCI(m.hits, m.n);
+  return !!(ci && ci.lo > 0.5 && m.hits / m.n > 0.5);
+}
+
+function makeFrequencyEngine() {
+  let r = 0;
+  let n = 0;
+  return {
+    id: "frequency",
+    name: "FREQUENCY",
+    lastDetail: "",
+    predict() {
+      const pR = (r + 1) / (n + 2);
+      this.lastDetail = `Laplace colour rate (${r} red, ${n - r} black in ${n}) → P(RED)=${(pR * 100).toFixed(1)}%.`;
+      return pR;
+    },
+    update(x) {
+      n++;
+      if (x === "R") r++;
+    },
+  };
+}
+
+function makeAntiMajorityEngine() {
+  let r = 0;
+  let n = 0;
+  let fadeH = 0;
+  let fadeN = 0;
+  return {
+    id: "antiMajority",
+    name: "ANTI-MAJORITY",
+    lastDetail: "",
+    fading: false,
+    predict() {
+      const pMaj = (r + 1) / (n + 2);
+      const lo = fadeN >= OMNI_MIN_N_CALL ? wilsonCI(fadeH, fadeN).lo : null;
+      this.fading = fadeN >= OMNI_MIN_N_CALL && lo != null && lo > 0.5 && fadeH / fadeN > 0.5;
+      if (this.fading) {
+        const pR = 1 - pMaj;
+        this.lastDetail = `Fade is significant (Wilson lo ${(lo * 100).toFixed(1)}%, ${fadeH}/${fadeN} against the running majority). Inverting the majority → P(RED)=${(pR * 100).toFixed(1)}%.`;
+        return pR;
+      }
+      this.lastDetail =
+        fadeN < OMNI_MIN_N_CALL
+          ? `Watching whether results fade the running majority (${fadeN}/${OMNI_MIN_N_CALL} trials). Not voting yet.`
+          : `No significant fade (against-majority ${fadeH}/${fadeN}, Wilson lo ${lo == null ? "—" : (lo * 100).toFixed(1)}%). Not voting.`;
+      return pMaj;
+    },
+    update(x) {
+      const pMaj = (r + 1) / (n + 2);
+      const bet = pMaj > 0.5 ? "R" : pMaj < 0.5 ? "B" : null;
+      if (bet != null) {
+        fadeN++;
+        if (x !== bet) fadeH++;
+      }
+      n++;
+      if (x === "R") r++;
+    },
+  };
+}
+
+function makeShoeEngine(red = 26, black = 26) {
+  let R = red;
+  let B = black;
+  const capR = red;
+  const capB = black;
+  return {
+    id: "shoe",
+    name: "SHOE COUNT",
+    lastDetail: "",
+    predict() {
+      const t = R + B;
+      const pR = t <= 0 ? 0.5 : R / t;
+      this.lastDetail = `Remaining ${R} red / ${B} black of a ${capR + capB}-card shoe → P(RED)=${(pR * 100).toFixed(1)}%. Votes only after its own walk-forward edge is verified.`;
+      return pR;
+    },
+    update(x) {
+      if (R + B <= 0) {
+        R = capR;
+        B = capB;
+      }
+      if (x === "R") R--;
+      else B--;
+    },
+  };
+}
+
+function makeBocpdEngine(hazard = 1 / 80, maxRun = 120) {
+  let growth = new Float64Array(maxRun + 1);
+  growth[0] = 1;
+  const prefix = [0];
+  return {
+    id: "bocpd",
+    name: "BOCPD",
+    lastDetail: "",
+    mapRun: 0,
+    predict() {
+      const t = prefix.length - 1;
+      let p = 0;
+      let s = 0;
+      const lim = Math.min(t, maxRun);
+      for (let r = 0; r <= lim; r++) {
+        const reds = r === 0 ? 0 : prefix[t] - prefix[t - r];
+        const pr = (1 + reds) / (2 + r);
+        p += growth[r] * pr;
+        s += growth[r];
+      }
+      const pR = s > 0 ? p / s : 0.5;
+      this.lastDetail = `Bayesian online change-point predictive (hazard 1/${Math.round(1 / hazard)}, MAP run ${this.mapRun}). P(RED)=${(pR * 100).toFixed(1)}%.`;
+      return pR;
+    },
+    update(x) {
+      const t = prefix.length - 1;
+      const xR = x === "R";
+      const lim = Math.min(t, maxRun);
+      const pred = new Float64Array(lim + 1);
+      for (let r = 0; r <= lim; r++) {
+        const reds = r === 0 ? 0 : prefix[t] - prefix[t - r];
+        const pr = (1 + reds) / (2 + r);
+        pred[r] = xR ? pr : 1 - pr;
+      }
+      const neu = new Float64Array(maxRun + 1);
+      let acc0 = 0;
+      for (let r = 0; r <= lim; r++) acc0 += growth[r] * pred[r] * hazard;
+      neu[0] = acc0;
+      for (let r = 0; r <= lim; r++) {
+        const g = growth[r] * pred[r] * (1 - hazard);
+        if (r + 1 <= maxRun) neu[r + 1] += g;
+        else neu[maxRun] += g;
+      }
+      let s = 0;
+      for (let i = 0; i <= maxRun; i++) s += neu[i];
+      if (s <= 0) s = 1;
+      for (let i = 0; i <= maxRun; i++) neu[i] /= s;
+      growth = neu;
+      prefix.push(prefix[t] + (xR ? 1 : 0));
+      let map = 0;
+      for (let r = 1; r <= maxRun; r++) if (growth[r] > growth[map]) map = r;
+      this.mapRun = map;
+    },
+  };
+}
+
+function makeSuitEngine() {
+  const map = new Map();
+  let last = null;
+  return {
+    id: "suit",
+    name: "SUIT",
+    lastDetail: "",
+    predict() {
+      if (!last) {
+        this.lastDetail = "No previous suit yet.";
+        return 0.5;
+      }
+      const rec = map.get(last) || { r: 0, b: 0 };
+      const pR = (rec.r + 1) / (rec.r + rec.b + 2);
+      this.lastDetail = `After ${last}: ${rec.r} red, ${rec.b} black (Laplace P(RED)=${(pR * 100).toFixed(1)}%). Votes only after a verified walk-forward edge.`;
+      return pR;
+    },
+    update(x, suit) {
+      if (last) {
+        let rec = map.get(last);
+        if (!rec) {
+          rec = { r: 0, b: 0 };
+          map.set(last, rec);
+        }
+        if (x === "R") rec.r++;
+        else rec.b++;
+      }
+      last = suit || null;
+    },
+  };
+}
+
+export function omniWalkForward(seq, { snapshotWeightsEvery = 0, contextOverride, suits } = {}) {
   const seqEng = makeSequenceEngine();
   const markovEng = makeMarkovOrderEngine();
   const bayesEng = makeBayesianForgetEngine();
   const mlEng = makeMLEngine();
   const anomEng = makeAnomalyEngine();
-  const engines = [seqEng, markovEng, bayesEng, mlEng];
+  const freqEng = makeFrequencyEngine();
+  const fadeEng = makeAntiMajorityEngine();
+  const shoeEng = makeShoeEngine();
+  const bocpdEng = makeBocpdEngine();
+  const suitEng = makeSuitEngine();
+  const hasSuits = Array.isArray(suits) && suits.length === seq.length;
+
   const metrics = {
     sequence: emptyMetrics(),
     markov: emptyMetrics(),
     bayesian: emptyMetrics(),
     ml: emptyMetrics(),
     anomaly: emptyMetrics(),
+    frequency: emptyMetrics(),
+    antiMajority: emptyMetrics(),
+    shoe: emptyMetrics(),
+    bocpd: emptyMetrics(),
+    suit: emptyMetrics(),
     masterRaw: emptyMetrics(),
     masterPublished: emptyMetrics(),
     baseline50: emptyMetrics(),
@@ -1895,26 +2088,35 @@ export function omniWalkForward(seq, { snapshotWeightsEvery = 0, contextOverride
   };
   let seenR = 0;
   const weightHistory = [];
-  const idsAlways = ["sequence", "markov", "bayesian", "ml"];
+  const idsCore = ["sequence", "markov", "bayesian", "ml", "frequency"];
 
-  for (let t = 0; t < seq.length; t++) {
-    const y = seq[t] === "R" ? 1 : 0;
+  function collectVotes() {
     const pSeq = seqEng.predict();
     const pMk = markovEng.predict();
     const pBy = bayesEng.predict();
     const pMl = mlEng.predict();
     const pAn = anomEng.predict();
+    const pFr = freqEng.predict();
+    const pFade = fadeEng.predict();
+    const pShoe = shoeEng.predict();
+    const pBo = bocpdEng.predict();
+    const pSu = hasSuits ? suitEng.predict() : null;
     const votes = [
       { id: "sequence", p: pSeq },
       { id: "markov", p: pMk },
       { id: "bayesian", p: pBy },
       { id: "ml", p: pMl },
+      { id: "frequency", p: pFr },
     ];
     if (pAn != null) votes.push({ id: "anomaly", p: pAn });
-
-    const weightIds = votes.map((v) => v.id);
-    // Anomaly may be absent from the weight vector this step; still keep a slot when it has history.
-    const w = engineWeights(metrics, idsAlways.concat(pAn != null ? ["anomaly"] : []), OMNI_ETA);
+    // Anti-majority votes only while a verified fade is active (otherwise it
+    // would double-count the frequency engine).
+    if (fadeEng.fading) votes.push({ id: "antiMajority", p: pFade });
+    if (liveEligible(metrics.shoe)) votes.push({ id: "shoe", p: pShoe });
+    if (liveEligible(metrics.bocpd)) votes.push({ id: "bocpd", p: pBo });
+    if (hasSuits && liveEligible(metrics.suit)) votes.push({ id: "suit", p: pSu });
+    const weightIds = idsCore.concat(votes.map((v) => v.id).filter((id) => !idsCore.includes(id)));
+    const w = engineWeights(metrics, weightIds, OMNI_ETA);
     let num = 0;
     let den = 0;
     for (const v of votes) {
@@ -1923,24 +2125,36 @@ export function omniWalkForward(seq, { snapshotWeightsEvery = 0, contextOverride
       den += wi;
     }
     const pEns = den > 0 ? num / den : 0.5;
-    const sh = shrinkEnsemble(pEns, votes.length, metrics.masterRaw.brierN || 0);
-    // Gate publication on the shrunk ensemble's *raw* walk-forward record, not on
-    // previously published 50/50 calls (which never increment hard-call n).
-    const pub = publishedFrom(sh.p, metrics.masterRaw);
+    const kEff = Math.max(1, votes.length);
+    const sh = shrinkEnsemble(pEns, kEff, metrics.masterRaw.brierN || 0);
+    return {
+      pSeq, pMk, pBy, pMl, pAn, pFr, pFade, pShoe, pBo, pSu, votes, w, pEns, sh,
+    };
+  }
+
+  for (let t = 0; t < seq.length; t++) {
+    const y = seq[t] === "R" ? 1 : 0;
+    const step = collectVotes();
+    const pub = publishedFrom(step.sh.p, metrics.masterRaw);
     const pBase = t > 0 ? seenR / t : 0.5;
 
-    hitPush2(metrics.sequence, pSeq, y);
-    hitPush2(metrics.markov, pMk, y);
-    hitPush2(metrics.bayesian, pBy, y);
-    hitPush2(metrics.ml, pMl, y);
-    if (pAn != null) hitPush2(metrics.anomaly, pAn, y);
-    hitPush2(metrics.masterRaw, sh.p, y);
+    hitPush2(metrics.sequence, step.pSeq, y);
+    hitPush2(metrics.markov, step.pMk, y);
+    hitPush2(metrics.bayesian, step.pBy, y);
+    hitPush2(metrics.ml, step.pMl, y);
+    if (step.pAn != null) hitPush2(metrics.anomaly, step.pAn, y);
+    hitPush2(metrics.frequency, step.pFr, y);
+    hitPush2(metrics.antiMajority, step.pFade, y);
+    hitPush2(metrics.shoe, step.pShoe, y);
+    hitPush2(metrics.bocpd, step.pBo, y);
+    if (hasSuits) hitPush2(metrics.suit, step.pSu, y);
+    hitPush2(metrics.masterRaw, step.sh.p, y);
     hitPush2(metrics.masterPublished, pub.p, y);
     hitPush2(metrics.baseline50, 0.5, y);
     hitPush2(metrics.baselineRate, pBase, y);
 
     if (snapshotWeightsEvery && (t % snapshotWeightsEvery === 0 || t === seq.length - 1)) {
-      weightHistory.push({ t, weights: { ...w }, pEns, pShrunk: sh.p, published: pub.p });
+      weightHistory.push({ t, weights: { ...step.w }, pEns: step.pEns, pShrunk: step.sh.p, published: pub.p });
     }
 
     seqEng.update(seq[t]);
@@ -1948,34 +2162,27 @@ export function omniWalkForward(seq, { snapshotWeightsEvery = 0, contextOverride
     bayesEng.update(seq[t]);
     mlEng.update(seq[t]);
     anomEng.update(seq[t]);
+    freqEng.update(seq[t]);
+    fadeEng.update(seq[t]);
+    shoeEng.update(seq[t]);
+    bocpdEng.update(seq[t]);
+    if (hasSuits) suitEng.update(seq[t], suits[t]);
     if (seq[t] === "R") seenR++;
   }
 
   for (const k of Object.keys(metrics)) completeMetrics(metrics[k]);
 
-  // Current (next) forecast, optionally with a suffix context override for SEQUENCE/MARKOV.
-  // Training state already includes the full seq. Context override is applied only as a
-  // temporary suffix for engines that read the last k colours, by swapping the tail of buf.
   function withOverride(eng, fn) {
     if (!contextOverride || !contextOverride.length) return fn();
     const saved = eng.buf ? eng.buf.slice() : null;
     if (eng.buf) {
-      // Replace only the visible tail; keep maps trained on the log.
       const head = eng.buf.slice(0, Math.max(0, eng.buf.length - contextOverride.length));
-      // If the override is a fresh display and the log is longer, replace the suffix;
-      // if the log is shorter, just use the override as buf for reading context.
-      if (eng.buf.length >= contextOverride.length) {
-        eng.buf.length = 0;
+      eng.buf.length = 0;
+      if (saved.length >= contextOverride.length) {
         for (const c of head.concat(contextOverride)) eng.buf.push(c);
       } else {
-        eng.buf.length = 0;
         for (const c of contextOverride) eng.buf.push(c);
       }
-    }
-    if (eng.last != null && contextOverride.length) {
-      // last / streak used by ML and anomaly — do not rewrite trained weights;
-      // only the read-side context of sequence/markov should change. Leave ML/anomaly as is
-      // unless this is the sequence or markov engine.
     }
     const out = fn();
     if (saved && eng.buf) {
@@ -1990,14 +2197,26 @@ export function omniWalkForward(seq, { snapshotWeightsEvery = 0, contextOverride
   const pByN = bayesEng.predict();
   const pMlN = mlEng.predict();
   const pAnN = anomEng.predict();
+  const pFrN = freqEng.predict();
+  const pFadeN = fadeEng.predict();
+  const pShoeN = shoeEng.predict();
+  const pBoN = bocpdEng.predict();
+  const pSuN = hasSuits ? suitEng.predict() : null;
+
   const votesN = [
-    { id: "sequence", p: pSeqN, detail: seqEng.lastDetail, usedK: seqEng.usedK },
-    { id: "markov", p: pMkN, detail: markovEng.lastDetail, order: markovEng.chosenK },
-    { id: "bayesian", p: pByN, detail: bayesEng.lastDetail },
-    { id: "ml", p: pMlN, detail: mlEng.lastDetail },
+    { id: "sequence", p: pSeqN },
+    { id: "markov", p: pMkN },
+    { id: "bayesian", p: pByN },
+    { id: "ml", p: pMlN },
+    { id: "frequency", p: pFrN },
   ];
-  if (pAnN != null) votesN.push({ id: "anomaly", p: pAnN, detail: anomEng.lastDetail });
-  const wN = engineWeights(metrics, idsAlways.concat(pAnN != null ? ["anomaly"] : []), OMNI_ETA);
+  if (pAnN != null) votesN.push({ id: "anomaly", p: pAnN });
+  if (fadeEng.fading) votesN.push({ id: "antiMajority", p: pFadeN });
+  if (liveEligible(metrics.shoe)) votesN.push({ id: "shoe", p: pShoeN });
+  if (liveEligible(metrics.bocpd)) votesN.push({ id: "bocpd", p: pBoN });
+  if (hasSuits && liveEligible(metrics.suit)) votesN.push({ id: "suit", p: pSuN });
+  const weightIdsN = idsCore.concat(votesN.map((v) => v.id).filter((id) => !idsCore.includes(id)));
+  const wN = engineWeights(metrics, weightIdsN, OMNI_ETA);
   let num = 0;
   let den = 0;
   for (const v of votesN) {
@@ -2006,19 +2225,30 @@ export function omniWalkForward(seq, { snapshotWeightsEvery = 0, contextOverride
     den += wi;
   }
   const pEnsN = den > 0 ? num / den : 0.5;
-  const shN = shrinkEnsemble(pEnsN, votesN.length, metrics.masterRaw.brierN || 0);
-  const pubN = publishedFrom(shN.p, metrics.masterPublished);
+  const shN = shrinkEnsemble(pEnsN, Math.max(1, votesN.length), metrics.masterRaw.brierN || 0);
+  // Publish the live call from the raw walk-forward record (not from the
+  // previously published 50/50 series, which delayed honest colours).
+  const pubN = publishedFrom(shN.p, metrics.masterRaw);
 
   const ctx = contextOverride && contextOverride.length ? contextOverride : seq;
+  function pack(pR, detail, extra = {}) {
+    return { pR, colour: pR == null ? null : colourFromP(pR), detail, ...extra };
+  }
   return {
     metrics,
     weightHistory,
     weights: wN,
+    votingIds: votesN.map((v) => v.id),
     engines: {
-      sequence: { pR: pSeqN, colour: colourFromP(pSeqN), detail: seqEng.lastDetail, usedK: seqEng.usedK },
-      markov: { pR: pMkN, colour: colourFromP(pMkN), detail: markovEng.lastDetail, order: markovEng.chosenK, orders: markovEng.lastPs },
-      bayesian: { pR: pByN, colour: colourFromP(pByN), detail: bayesEng.lastDetail },
-      ml: { pR: pMlN, colour: colourFromP(pMlN), detail: mlEng.lastDetail },
+      sequence: pack(pSeqN, seqEng.lastDetail, { usedK: seqEng.usedK }),
+      markov: pack(pMkN, markovEng.lastDetail, { order: markovEng.chosenK, orders: markovEng.lastPs }),
+      bayesian: pack(pByN, bayesEng.lastDetail),
+      ml: pack(pMlN, mlEng.lastDetail),
+      frequency: pack(pFrN, freqEng.lastDetail, { contributes: true }),
+      antiMajority: pack(pFadeN, fadeEng.lastDetail, { contributes: fadeEng.fading, fading: fadeEng.fading }),
+      shoe: pack(pShoeN, shoeEng.lastDetail, { contributes: liveEligible(metrics.shoe) }),
+      bocpd: pack(pBoN, bocpdEng.lastDetail, { contributes: liveEligible(metrics.bocpd), mapRun: bocpdEng.mapRun }),
+      suit: pack(pSuN, hasSuits ? suitEng.lastDetail : "No suit data in this log.", { contributes: !!(hasSuits && liveEligible(metrics.suit)) }),
       anomaly: {
         pR: pAnN,
         colour: pAnN == null ? null : colourFromP(pAnN),
@@ -2042,20 +2272,25 @@ export function omniWalkForward(seq, { snapshotWeightsEvery = 0, contextOverride
 }
 
 export function omniConfidence(metricsPublished, metricsRaw) {
-  const m = metricsPublished || emptyMetrics();
+  // Significance follows the raw walk-forward record (the live publish gate).
+  // Displayed accuracy prefers the published series once it has any hard calls.
+  const raw = metricsRaw || emptyMetrics();
+  const pub = metricsPublished || emptyMetrics();
+  const gate = raw.n > 0 ? raw : pub;
+  const significant = gate.n >= OMNI_MIN_N_CALL && gate.ci && gate.ci.lo > 0.5;
+  const m = pub.n >= OMNI_MIN_N_CALL ? pub : raw;
   const n = m.n;
   const acc = m.acc;
   const ci = m.ci;
-  const significant = n >= OMNI_MIN_N_CALL && ci && ci.lo > 0.5;
   let band = "Low";
-  if (significant && n >= 100 && ci.lo > 0.52) band = "High";
-  else if (significant && n >= OMNI_MIN_N_CALL && ci.lo > 0.5) band = "Medium";
+  if (significant && n >= 100 && ci && ci.lo > 0.52) band = "High";
+  else if (significant && n >= OMNI_MIN_N_CALL && ci && ci.lo > 0.5) band = "Medium";
   const accTxt = acc == null ? "—" : `${(acc * 100).toFixed(1)}% (${m.hits}/${n})`;
   const ciTxt = ci ? `Wilson 95% CI ${(ci.lo * 100).toFixed(1)}–${(ci.hi * 100).toFixed(1)}%` : "no CI yet";
   const text =
-    n < OMNI_MIN_N_CALL
-      ? `CONFIDENCE: Low — only ${n} scored master call${n === 1 ? "" : "s"} so far (need ${OMNI_MIN_N_CALL}). This is measured walk-forward accuracy, not the chance the next colour is correct.`
-      : `CONFIDENCE: ${band} — master walk-forward accuracy ${accTxt}, ${ciTxt}, n=${n}. This is independently measured out-of-sample performance of the published master, not the probability that the next colour is correct.` +
+    (raw.n || 0) < OMNI_MIN_N_CALL
+      ? `CONFIDENCE: Low — only ${raw.n || 0} scored master call${raw.n === 1 ? "" : "s"} so far (need ${OMNI_MIN_N_CALL}). This is measured walk-forward accuracy, not the chance the next colour is correct.`
+      : `CONFIDENCE: ${band} — master walk-forward accuracy ${accTxt}, ${ciTxt}, n=${n}. This is independently measured out-of-sample performance, not the probability that the next colour is correct.` +
         (significant ? "" : " The interval still includes 50%, so there is no verified edge.");
   return {
     band,
@@ -2065,8 +2300,8 @@ export function omniConfidence(metricsPublished, metricsRaw) {
     hits: m.hits,
     ci,
     text,
-    rawAcc: metricsRaw && metricsRaw.acc,
-    rawN: metricsRaw && metricsRaw.n,
+    rawAcc: raw.acc,
+    rawN: raw.n,
   };
 }
 
@@ -2077,6 +2312,7 @@ export function omniAnalyze(seq, opts = {}) {
   const cusum = cusumBernoulli(seq);
   const bocpd = bocpdBernoulli(seq);
   const support = dataSupport(seq, [3, 4, 5]);
+  const patterns = omniPatternTests(seq, opts);
   const use = wf.master.significant && wf.master.publishedCall != null;
   const prediction = use ? wf.master.publishedCall : null;
   const pRed = use ? wf.master.publishedP : 0.5;
@@ -2091,15 +2327,27 @@ export function omniAnalyze(seq, opts = {}) {
       ? `Master publishes ${prediction === "R" ? "RED" : "BLACK"} at ${(pRed * 100).toFixed(1)}% after correlation shrinkage (s=${wf.master.shrinkage.s.toFixed(2)}, ρ=${OMNI_RHO}).`
       : "Master has no statistically verified walk-forward edge, so the published call is 50/50.",
   );
-  const engineTitle = { sequence: "SEQUENCE", markov: "MARKOV", bayesian: "BAYESIAN", ml: "MACHINE LEARNING" };
-  for (const id of ["sequence", "markov", "bayesian", "ml"]) {
+  const engineTitle = {
+    sequence: "SEQUENCE",
+    markov: "MARKOV",
+    bayesian: "BAYESIAN",
+    ml: "MACHINE LEARNING",
+    frequency: "FREQUENCY",
+  };
+  for (const id of ["sequence", "markov", "bayesian", "ml", "frequency"]) {
     const e = wf.engines[id];
     const w = wf.weights[id] || 0;
     if (e) reasonParts.push(`${engineTitle[id]}: ${e.colour} ${(e.pR * 100).toFixed(1)}% (weight ${(w * 100).toFixed(1)}%). ${e.detail}`);
   }
   reasonParts.push(`ANOMALY: ${wf.engines.anomaly.message}.`);
   if (wf.engines.anomaly.contributes) {
-    reasonParts.push(`ANOMALY weight ${(wf.weights.anomaly * 100).toFixed(1)}%. ${wf.engines.anomaly.detail}`);
+    reasonParts.push(`ANOMALY weight ${((wf.weights.anomaly || 0) * 100).toFixed(1)}%. ${wf.engines.anomaly.detail}`);
+  }
+  for (const id of ["antiMajority", "shoe", "bocpd", "suit"]) {
+    const e = wf.engines[id];
+    if (!e) continue;
+    const tag = e.contributes ? `voting, weight ${((wf.weights[id] || 0) * 100).toFixed(1)}%` : "not voting";
+    reasonParts.push(`${e.detail ? id.toUpperCase() : id}: ${tag}. ${e.detail || ""}`.trim());
   }
   reasonParts.push(conf.text);
   return {
@@ -2111,6 +2359,7 @@ export function omniAnalyze(seq, opts = {}) {
     tests,
     cusum,
     bocpd,
+    patterns,
     dataSupport: support,
     dataSupportText: formatDataSupport(support),
     noEdgeBanner,
@@ -2127,8 +2376,14 @@ export function omniLockedRecord(analysis, now = Date.now()) {
     markov: analysis.engines.markov,
     bayesian: analysis.engines.bayesian,
     ml: analysis.engines.ml,
+    frequency: analysis.engines.frequency,
+    antiMajority: analysis.engines.antiMajority,
+    shoe: analysis.engines.shoe,
+    bocpd: analysis.engines.bocpd,
+    suit: analysis.engines.suit,
     anomaly: analysis.engines.anomaly,
     weights: analysis.weights,
+    votingIds: analysis.votingIds,
     prediction: analysis.prediction,
     pRed: analysis.pRed,
     pBlack: analysis.pBlack,
@@ -2138,5 +2393,304 @@ export function omniLockedRecord(analysis, now = Date.now()) {
     confidenceBand: analysis.confidence.band,
     confidenceText: analysis.confidence.text,
     reason: analysis.reason,
+  };
+}
+
+/**
+ * Fisher's method: combine independent p-values.
+ * X = -2 Σ ln(p_i) ~ χ²(2k).
+ */
+export function fisherCombinedP(pvalues) {
+  const ps = (pvalues || []).map((p) => {
+    const x = Number(p);
+    if (!Number.isFinite(x)) return 1;
+    return Math.min(1, Math.max(1e-16, x));
+  });
+  const k = ps.length;
+  if (!k) return { stat: 0, df: 0, p: 1, k: 0 };
+  let stat = 0;
+  for (const p of ps) stat += -2 * Math.log(p);
+  const df = 2 * k;
+  const p = chiSquarePValue(stat, df);
+  return { stat, df, p, k };
+}
+
+function lagPredictPValue(seq, L) {
+  let hits = 0;
+  let n = 0;
+  for (let t = L; t < seq.length; t++) {
+    n++;
+    if (seq[t] === seq[t - L]) hits++;
+  }
+  if (n < 20) return { p: null, acc: null, n, lag: L };
+  const acc = hits / n;
+  const p = acc >= 0.5 ? binomialPValueGte(hits, n, 0.5) : binomialPValueGte(n - hits, n, 0.5);
+  return { p, acc, n, hits, lag: L };
+}
+
+/**
+ * Pattern tests used for side-by-side device comparison.
+ * Each item has a stable `id` so Fisher's method can combine like with like.
+ */
+export function omniPatternTests(seq, { suits } = {}) {
+  const n = seq.length;
+  const out = [];
+  const nR = seq.filter((c) => c === "R").length;
+  const freq = chiSquareFrequency(seq);
+  out.push({
+    id: "bias",
+    name: "Colour bias",
+    p: freq.p,
+    direction: nR === n - nR ? "even" : nR > n - nR ? "red" : "black",
+    stat: { nR, nB: n - nR, n },
+    significant: freq.p != null && freq.p < ALPHA,
+  });
+
+  const runs = runsTest(seq);
+  out.push({
+    id: "sticky",
+    name: "Streak / alternation",
+    p: runs.p,
+    direction: runs.z == null ? null : runs.z < 0 ? "sticky" : "alternating",
+    stat: { z: runs.z, runs: runs.runs, n },
+    significant: runs.p != null && runs.p < ALPHA,
+  });
+
+  // Fade: does the outcome go against the running majority?
+  let r = 0;
+  let fadeH = 0;
+  let fadeN = 0;
+  for (let t = 0; t < n; t++) {
+    if (t > 0) {
+      const bet = r > t - r ? "R" : r < t - r ? "B" : null;
+      if (bet != null) {
+        fadeN++;
+        if (seq[t] !== bet) fadeH++;
+      }
+    }
+    if (seq[t] === "R") r++;
+  }
+  const fadeP = fadeN >= 20 ? binomialPValueGte(fadeH, fadeN, 0.5) : null;
+  const fadeAcc = fadeN ? fadeH / fadeN : null;
+  out.push({
+    id: "fade",
+    name: "Anti-majority fade",
+    p: fadeP,
+    direction: fadeAcc != null && fadeAcc > 0.5 ? "fades-majority" : fadeAcc != null && fadeAcc < 0.5 ? "follows-majority" : null,
+    stat: { hits: fadeH, n: fadeN, acc: fadeAcc },
+    significant: fadeP != null && fadeP < ALPHA && fadeAcc > 0.5,
+  });
+
+  // Shoe: remaining-count walk-forward vs 50/50 (52-card, 26/26).
+  let R = 26;
+  let B = 26;
+  let shoeH = 0;
+  let shoeN = 0;
+  for (let t = 0; t < n; t++) {
+    if (R + B <= 0) {
+      R = 26;
+      B = 26;
+    }
+    const pR = R / (R + B);
+    if (pR !== 0.5) {
+      const pick = pR > 0.5 ? "R" : "B";
+      shoeN++;
+      if (pick === seq[t]) shoeH++;
+    }
+    if (seq[t] === "R") R--;
+    else B--;
+  }
+  const shoeP = shoeN >= 20 ? binomialPValueGte(shoeH, shoeN, 0.5) : null;
+  const shoeAcc = shoeN ? shoeH / shoeN : null;
+  out.push({
+    id: "shoe",
+    name: "Without-replacement / shoe",
+    p: shoeP,
+    direction: shoeAcc != null && shoeAcc > 0.5 ? "depletion" : null,
+    stat: { hits: shoeH, n: shoeN, acc: shoeAcc },
+    significant: shoeP != null && shoeP < ALPHA && shoeAcc > 0.5,
+  });
+
+  let bestLag = null;
+  for (let L = 2; L <= 12; L++) {
+    const row = lagPredictPValue(seq, L);
+    if (!row.p || row.acc == null) continue;
+    if (!bestLag || row.acc > bestLag.acc) bestLag = row;
+  }
+  out.push({
+    id: "period",
+    name: "Periodic lag",
+    p: bestLag ? bestLag.p : null,
+    direction: bestLag && bestLag.acc > 0.5 ? `lag-${bestLag.lag}` : null,
+    stat: bestLag,
+    significant: !!(bestLag && bestLag.p < ALPHA && bestLag.acc > 0.5),
+  });
+
+  const hasSuits = Array.isArray(suits) && suits.length === n;
+  if (hasSuits) {
+    const map = new Map();
+    let hits = 0;
+    let tn = 0;
+    for (let t = 1; t < n; t++) {
+      const key = suits[t - 1];
+      if (!key) continue;
+      const rec = map.get(key) || { r: 0, b: 0 };
+      const tot = rec.r + rec.b;
+      if (tot >= 2) {
+        const pR = (rec.r + 1) / (tot + 2);
+        if (pR !== 0.5) {
+          tn++;
+          const pick = pR > 0.5 ? "R" : "B";
+          if (pick === seq[t]) hits++;
+        }
+      }
+      if (seq[t] === "R") rec.r++;
+      else rec.b++;
+      map.set(key, rec);
+    }
+    const p = tn >= 20 ? binomialPValueGte(hits, tn, 0.5) : null;
+    const acc = tn ? hits / tn : null;
+    out.push({
+      id: "suit",
+      name: "Suit-to-next-colour",
+      p,
+      direction: acc != null && acc > 0.5 ? "suit-predicts-colour" : null,
+      stat: { hits, n: tn, acc },
+      significant: p != null && p < ALPHA && acc > 0.5,
+    });
+  } else {
+    out.push({
+      id: "suit",
+      name: "Suit-to-next-colour",
+      p: null,
+      direction: null,
+      stat: { skip: "No suit data." },
+      significant: false,
+    });
+  }
+
+  const cp = bocpdBernoulli(seq);
+  const cu = cusumBernoulli(seq);
+  out.push({
+    id: "changepoint",
+    name: "Regime change",
+    p: cu.flagged || cp.flagged ? 0.01 : 0.5,
+    direction: cu.flagged ? cu.alarm && cu.alarm.side : cp.flagged ? "bocpd" : null,
+    stat: { cusum: cu.flagged, bocpd: cp.flagged, mapRun: cp.mapRunLength },
+    significant: !!(cu.flagged || cp.flagged),
+  });
+
+  return out;
+}
+
+function leadingEngine(metrics) {
+  const ids = ["frequency", "sequence", "markov", "bayesian", "ml", "anomaly", "antiMajority", "shoe", "bocpd", "suit"];
+  let best = null;
+  for (const id of ids) {
+    const m = metrics[id];
+    if (!m || m.n < 20 || m.acc == null) continue;
+    if (!best || m.acc > best.acc) best = { id, acc: m.acc, n: m.n, hits: m.hits, ci: m.ci };
+  }
+  return best;
+}
+
+/**
+ * Side-by-side comparison of independent device logs.
+ * Predictions are never pooled here. Optional `poolSameGame` only adds a
+ * diagnostic combined analysis; it does not replace per-device results.
+ */
+export function omniCompareDevices(devices, { poolSameGame = false } = {}) {
+  const rows = [];
+  for (const d of devices || []) {
+    const seq = (d.seq || []).filter((c) => c === "R" || c === "B");
+    const suits = Array.isArray(d.suits) && d.suits.length === seq.length ? d.suits : null;
+    const analysis = omniAnalyze(seq, { suits });
+    const patterns = analysis.patterns || omniPatternTests(seq, { suits });
+    rows.push({
+      id: d.id || d.label || `device-${rows.length + 1}`,
+      label: d.label || d.id || `Device ${rows.length + 1}`,
+      n: seq.length,
+      nRed: seq.filter((c) => c === "R").length,
+      published: analysis.use,
+      prediction: analysis.prediction,
+      pRed: analysis.pRed,
+      raw: {
+        acc: analysis.metrics.masterRaw.acc,
+        n: analysis.metrics.masterRaw.n,
+        hits: analysis.metrics.masterRaw.hits,
+        ci: analysis.metrics.masterRaw.ci,
+        significant: analysis.master.significant,
+      },
+      leading: leadingEngine(analysis.metrics),
+      patterns,
+      banner: analysis.noEdgeBanner,
+    });
+  }
+
+  const patternIds = ["bias", "sticky", "fade", "shoe", "period", "suit", "changepoint"];
+  const consistency = [];
+  const nPat = patternIds.length;
+  for (const pid of patternIds) {
+    const used = [];
+    for (const row of rows) {
+      const pat = (row.patterns || []).find((p) => p.id === pid);
+      if (pat && pat.p != null) used.push({ label: row.label, p: pat.p, significant: !!pat.significant, direction: pat.direction });
+    }
+    if (used.length < 2) continue;
+    const combined = fisherCombinedP(used.map((u) => u.p));
+    const nSig = used.filter((u) => u.significant).length;
+    const dirs = used.filter((u) => u.significant && u.direction).map((u) => u.direction);
+    const sameDir = dirs.length >= 2 && dirs.every((d) => d === dirs[0]);
+    const adjP = Math.min(1, combined.p * nPat);
+    consistency.push({
+      id: pid,
+      name: (rows[0].patterns.find((p) => p.id === pid) || { name: pid }).name,
+      devices: used,
+      combined,
+      adjustedP: adjP,
+      nSignificant: nSig,
+      sameDirection: sameDir,
+      flagged: nSig >= 2 && sameDir && adjP < 0.05,
+    });
+  }
+
+  let pooled = null;
+  if (poolSameGame && rows.length >= 2) {
+    const seq = [];
+    const suits = [];
+    let anySuit = false;
+    for (const d of devices) {
+      const s = (d.seq || []).filter((c) => c === "R" || c === "B");
+      for (let i = 0; i < s.length; i++) {
+        seq.push(s[i]);
+        const su = d.suits && d.suits[i];
+        if (su) anySuit = true;
+        suits.push(su || null);
+      }
+    }
+    const analysis = omniAnalyze(seq, { suits: anySuit ? suits : undefined });
+    pooled = {
+      n: seq.length,
+      published: analysis.use,
+      prediction: analysis.prediction,
+      pRed: analysis.pRed,
+      raw: {
+        acc: analysis.metrics.masterRaw.acc,
+        n: analysis.metrics.masterRaw.n,
+        hits: analysis.metrics.masterRaw.hits,
+        ci: analysis.metrics.masterRaw.ci,
+        significant: analysis.master.significant,
+      },
+      patterns: analysis.patterns,
+      note: "Diagnostic only. This pooled view does not change any device's live predictions.",
+    };
+  }
+
+  return {
+    devices: rows,
+    consistency,
+    sharedFlags: consistency.filter((c) => c.flagged),
+    poolSameGame: !!poolSameGame,
+    pooled,
   };
 }
