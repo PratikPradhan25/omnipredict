@@ -87,7 +87,7 @@
     .suit-board { display: flex; flex-direction: column; gap: 8px; }
     .suit-row-wrap { min-width: 0; }
     .suit-row-label { font-size: 0.62rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
-    .suit-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+    .suit-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
     .suit {
       border-radius: 10px; border: 1px solid #333; background: #141416; color: #eee;
       padding: 8px 0 6px; font-size: 1.2rem; line-height: 1; text-align: center;
@@ -155,6 +155,28 @@
     details { margin-top: 8px; }
     summary { cursor: pointer; color: var(--gold); }
     .honest { font-size: 0.78rem; color: var(--muted); margin-top: 8px; }
+    .answer-colour {
+      font-size: 3.5rem; font-weight: 800; letter-spacing: 0.14em;
+      line-height: 1.05; text-align: center; margin: 6px 0 8px;
+    }
+    .answer-suit { text-align: center; font-size: 1.05rem; margin: 0 0 10px; }
+    .answer-suit .pip { font-size: 1.3rem; }
+    .answer-status {
+      text-align: center; font-size: 0.82rem; color: var(--muted);
+      margin: 0 0 4px; line-height: 1.35;
+    }
+    .details-card { padding-top: 12px; }
+    .details-card > summary {
+      font-size: 0.72rem; letter-spacing: 0.16em; text-transform: uppercase;
+      font-weight: 600; list-style: none; color: var(--gold);
+    }
+    .details-card > summary::-webkit-details-marker { display: none; }
+    .details-card > summary::after { content: " ▾"; }
+    #btnPredictRed { background: linear-gradient(180deg, #ff5a6a, #c4122e); }
+    #btnPredictBlack { background: linear-gradient(180deg, #3a3a44, #111118); border: 1px solid #555; }
+    #simpleAnswerCard .newgame-row { margin-top: 10px; }
+    .exact-card-details { margin-top: 4px; }
+    .exact-card-details > summary { color: var(--muted); font-size: 0.8rem; }
   </style>
 </head>
 <body>
@@ -167,30 +189,46 @@
   </header>
   <main>
     <section class="tab on" id="tab-predict" data-tab="predict">
-      <div class="card">
+      <div id="setupMount"></div>
+      <div class="card" id="setupBlock">
         <h2>Last colours (3–5)</h2>
-        <p class="small">Tap the last 3–5 cards, oldest first. This game shows all four suits in both colours — the button colour is what gets recorded. Leave unused slots empty at the end.</p>
+        <p class="small">At the start of a game, tap the last 3–5 cards the machine shows, oldest first. Red is hearts or diamonds; black is clubs or spades. Then tap Predict. After that, just tell the app what came next — you don’t need to change these slots again.</p>
         <div class="slots" id="slots"></div>
         <div class="row" style="margin-top:12px">
           <button type="button" class="primary" id="btnPredict" data-testid="predict">Predict next colour</button>
         </div>
         <button type="button" id="btnClearSlots" style="width:100%;margin-top:8px">Clear slots</button>
       </div>
-      <div class="card">
-        <h2>Master panel</h2>
-        <div id="predictPanel"><p class="small">Enter at least three suits, then Predict.</p></div>
+      <div class="card" id="simpleAnswerCard" hidden>
+        <h2>Next colour</h2>
+        <div id="answerColour" class="answer-colour" data-testid="simple-answer">—</div>
+        <div id="answerSuit" class="answer-suit" data-testid="simple-suit"></div>
+        <div id="answerStatus" class="answer-status" data-testid="simple-status"></div>
         <div class="next-result" id="nextResult" data-testid="what-came-next">
           <h2>What came next?</h2>
-          <p class="small">Tap the actual result after the prediction is shown. It is scored against the already-locked call, saved to the Log, and the next prediction appears above so you can keep going on this screen.</p>
+          <p class="small">Tap the colour that actually came out. The answer above is already locked and will not change.</p>
           <div class="big2">
             <button type="button" id="btnPredictRed" data-testid="predict-result-red">RED</button>
             <button type="button" id="btnPredictBlack" data-testid="predict-result-black">BLACK</button>
           </div>
-          <div class="suit-board" id="predictResultSuits" style="margin-top:8px"></div>
+          <details class="exact-card-details">
+            <summary>Or the exact card</summary>
+            <p class="small">Optional. Tap the exact card if you want the suit guess scored.</p>
+            <div class="suit-board" id="predictResultSuits" style="margin-top:8px"></div>
+          </details>
           <div id="predictToast" class="toast off" data-testid="predict-toast" role="status"></div>
-          <button type="button" id="btnUndoPredict" data-testid="undo-last-predict" style="width:100%;margin-top:8px">Undo last entry</button>
+          <div class="newgame-row">
+            <button type="button" id="btnUndoPredict" data-testid="undo-last-predict">Undo last</button>
+            <button type="button" id="btnNewGamePredict" data-testid="new-game-predict">New game</button>
+          </div>
         </div>
       </div>
+      <details class="card details-card" id="predictDetails">
+        <summary>Details</summary>
+        <div id="detailsSetupMount"></div>
+        <h2 style="margin-top:12px">Master panel</h2>
+        <div id="predictPanel"><p class="small">Enter at least three suits, then Predict.</p></div>
+      </details>
     </section>
 
     <section class="tab" id="tab-log" data-tab="log">
@@ -214,7 +252,7 @@
           <button type="button" id="btnRed" data-testid="log-red">RED</button>
           <button type="button" id="btnBlack" data-testid="log-black">BLACK</button>
         </div>
-        <p class="small">Or record the exact card. Colour comes from the button row, not from the usual suit colour. All four suits exist in red and in black.</p>
+        <p class="small">Or record the exact card. Red is hearts or diamonds; black is clubs or spades.</p>
         <div class="suit-board" id="logSuits" style="margin-top:8px"></div>
         <div class="row"><label class="small"><input type="checkbox" id="useClock" checked /> timestamp each result</label></div>
         <div id="streak" class="small" style="margin-top:8px"></div>
@@ -3044,8 +3082,10 @@ export function omniCompareDevices(devices, { poolSameGame = false } = {}) {
     { pip: "♠", name: "Spades", letter: "S" },
   ];
   const SUITS = [
-    ...PIPS.map((p) => ({ id: "R" + p.pip, pip: p.pip, name: p.name, color: "R", cls: "red-ink", letter: p.letter })),
-    ...PIPS.map((p) => ({ id: "B" + p.pip, pip: p.pip, name: p.name, color: "B", cls: "black-ink", letter: p.letter })),
+    { id: "R♥", pip: "♥", name: "Hearts", color: "R", cls: "red-ink", letter: "H" },
+    { id: "R♦", pip: "♦", name: "Diamonds", color: "R", cls: "red-ink", letter: "D" },
+    { id: "B♣", pip: "♣", name: "Clubs", color: "B", cls: "black-ink", letter: "C" },
+    { id: "B♠", pip: "♠", name: "Spades", color: "B", cls: "black-ink", letter: "S" },
   ];
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -3083,6 +3123,7 @@ export function omniCompareDevices(devices, { poolSameGame = false } = {}) {
 
   let log = load();
   let pending = null;
+  let hasSimpleAnswer = false;
   let slots = [null, null, null, null, null]; // suit ids or null
 
   function load() {
@@ -3108,9 +3149,127 @@ export function omniCompareDevices(devices, { poolSameGame = false } = {}) {
     return opts;
   }
 
+  function leanDisplay(eng) {
+    if (!eng || eng.pR == null || !Number.isFinite(eng.pR)) return { text: "—", cls: "" };
+    const pR = eng.pR;
+    if (pR === 0.5 || eng.colour === "EVEN") return { text: "50/50", cls: "" };
+    if (pR > 0.5) return { text: "RED " + pct(pR), cls: "r" };
+    return { text: "BLACK " + pct(1 - pR), cls: "k" };
+  }
+  function bestGuessColor(a, colors) {
+    if (a && (a.prediction === "R" || a.prediction === "B")) return a.prediction;
+    const p = a && a.master && (a.master.pShrunk != null ? a.master.pShrunk : a.master.pEns);
+    if (p != null && Number.isFinite(p)) {
+      if (p > 0.5) return "R";
+      if (p < 0.5) return "B";
+    }
+    // Exactly 50/50: use the most recent colour (deterministic tie-break).
+    const s = colors && colors.length ? colors : seq();
+    if (s.length) return s[s.length - 1];
+    return "R";
+  }
+  function pickLikelySuit(color, entries) {
+    const options = SUITS.filter((s) => s.color === color);
+    const counts = {};
+    for (const s of options) counts[s.pip] = 1; // Laplace: uniform 1/2 when no data
+    for (const e of entries || []) {
+      if (!e || e.color !== color) continue;
+      const pip = suitPip(e.suit);
+      // Only count standard suits for this colour. Older logs (e.g. red clubs) still score by colour only.
+      if (pip && counts[pip] != null) counts[pip]++;
+    }
+    let best = options[0], bestN = -1;
+    for (const s of options) {
+      if (counts[s.pip] > bestN) { bestN = counts[s.pip]; best = s; }
+    }
+    const total = options.reduce((sum, s) => sum + counts[s.pip], 0);
+    return { id: best.id, pip: best.pip, name: best.name, color: best.color, p: bestN / total };
+  }
+  function entriesForSuitPick() {
+    if (log.length) return log;
+    const rows = [];
+    for (const id of slots) {
+      if (!id) continue;
+      const s = SUITS.find((x) => x.id === id);
+      if (s) rows.push({ color: s.color, suit: s.id });
+    }
+    return rows;
+  }
+  function attachGuess(rec, a, colors, entries) {
+    const guess = bestGuessColor(a, colors);
+    rec.bestGuess = guess;
+    rec.guessSuit = pickLikelySuit(guess, entries || entriesForSuitPick());
+    rec.guessPublished = !!(a && (a.prediction === "R" || a.prediction === "B"));
+    return rec;
+  }
+  function lockRecord(a, colors, entries) {
+    return attachGuess(E.omniLockedRecord(a, Date.now()), a, colors, entries);
+  }
+  function guessStats() {
+    let n = 0, hits = 0, suitN = 0, suitHits = 0;
+    for (const e of log) {
+      if (e.context) continue;
+      const g = e.pred && e.pred.bestGuess;
+      if (g === "R" || g === "B") {
+        n++;
+        if (e.guessCorrect === true || (e.guessCorrect == null && g === e.color)) hits++;
+      }
+      const gs = e.pred && e.pred.guessSuit;
+      const gid = gs && (typeof gs === "string" ? gs : gs.id);
+      if (e.suit && gid) {
+        suitN++;
+        if (e.suitCorrect === true || (e.suitCorrect == null && e.suit === gid)) suitHits++;
+      }
+    }
+    return { n, hits, acc: n ? hits / n : null, suitN, suitHits, suitAcc: suitN ? suitHits / suitN : null };
+  }
+  function updatePredictLayout() {
+    const setup = $("setupBlock");
+    const top = $("setupMount");
+    const detailsMount = $("detailsSetupMount");
+    const showStart = !log.length && !hasSimpleAnswer;
+    if (setup && top && detailsMount) {
+      if (showStart) {
+        if (setup.parentElement !== top) top.appendChild(setup);
+      } else if (setup.parentElement !== detailsMount) {
+        detailsMount.appendChild(setup);
+      }
+    }
+    const simple = $("simpleAnswerCard");
+    if (simple) simple.hidden = !(hasSimpleAnswer || log.length);
+  }
+  function renderSimpleAnswer(a) {
+    if (!a || !$("answerColour")) return;
+    const colors = seq().length ? seq() : entriesForSuitPick().map((e) => e.color);
+    const guess = (pending && pending.bestGuess) || bestGuessColor(a, colors);
+    const suit = (pending && pending.guessSuit) || pickLikelySuit(guess, entriesForSuitPick());
+    const published = a.prediction === "R" || a.prediction === "B";
+    const el = $("answerColour");
+    el.textContent = col(guess);
+    el.className = "answer-colour " + (guess === "R" ? "r" : "k");
+    const colourWord = guess === "R" ? "red" : "black";
+    $("answerSuit").innerHTML = "Most likely card: " + esc(suit.name) + " <span class=\"pip\">" + esc(suit.pip) + "</span> (" + colourWord + ")";
+    const raw = a.metrics.masterRaw || { n: 0, hits: 0, acc: null };
+    const pubm = a.metrics.masterPublished || { n: 0, hits: 0, acc: null };
+    const need = E.OMNI_MIN_N_CALL;
+    const gs = guessStats();
+    let status;
+    if (published) {
+      const n = pubm.n || raw.n || 0;
+      const acc = pubm.acc != null ? pubm.acc : raw.acc;
+      status = "Proven edge: " + pct(acc) + " over " + n + " calls";
+    } else {
+      status = "Best guess — no proven edge yet (" + (raw.n || 0) + "/" + need + " calls, " + gs.hits + " right so far)";
+    }
+    if (gs.suitN) status += " · exact card " + gs.suitHits + "/" + gs.suitN + " vs 25%";
+    $("answerStatus").textContent = status;
+    hasSimpleAnswer = true;
+    updatePredictLayout();
+  }
+
   function lockNext() {
     const a = E.omniAnalyze(seq(), analyzeOpts());
-    pending = E.omniLockedRecord(a, Date.now());
+    pending = lockRecord(a, seq(), log);
     return a;
   }
 
@@ -3119,6 +3278,7 @@ export function omniCompareDevices(devices, { poolSameGame = false } = {}) {
     log.pop();
     for (let i = 0; i < log.length; i++) log[i].i = i + 1;
     pending = null;
+    if (!log.length) hasSimpleAnswer = false;
     save();
     refresh();
     showPredictToast("Undid last entry — " + log.length + " left in the log.");
@@ -3129,6 +3289,10 @@ export function omniCompareDevices(devices, { poolSameGame = false } = {}) {
     if (!pending) lockNext();
     const pred = pending;
     const correct = pred.prediction == null ? null : pred.prediction === color;
+    const guess = pred.bestGuess || null;
+    const guessCorrect = guess == null ? null : guess === color;
+    const gid = pred.guessSuit && (pred.guessSuit.id || pred.guessSuit);
+    const suitCorrect = (suit && gid) ? suit === gid : null;
     const ts = $("useClock") && $("useClock").checked ? Date.now() : null;
     log.push({
       i: log.length + 1,
@@ -3138,6 +3302,8 @@ export function omniCompareDevices(devices, { poolSameGame = false } = {}) {
       enteredAt: Date.now(),
       pred,
       correct,
+      guessCorrect,
+      suitCorrect,
     });
     pending = null;
     save();
@@ -3146,9 +3312,8 @@ export function omniCompareDevices(devices, { poolSameGame = false } = {}) {
   function renderPanel(a, el) {
     const e = a.engines;
     const line = (label, eng, id) => {
-      const shown = eng.colour === "EVEN" ? "EVEN " + pct(0.5) : eng.colour + " " + pct(eng.pR);
-      const cls = eng.colour === "RED" ? "r" : eng.colour === "BLACK" ? "k" : "";
-      return `<div class="ln"><span class="lab">${label}:</span> <b class="${cls}">${shown}</b> <small>weight ${pct(a.weights[id] || 0)}</small></div>`;
+      const lean = leanDisplay(eng);
+      return `<div class="ln"><span class="lab">${label}:</span> <b class="${lean.cls}">${lean.text}</b> <small>weight ${pct(a.weights[id] || 0)}</small></div>`;
     };
     const master = a.prediction == null ? "NO EDGE — 50/50" : col(a.prediction);
     const mcls = a.prediction === "R" ? "r published master-call" : a.prediction === "B" ? "k published master-call" : "noedge master-call";
@@ -3164,8 +3329,8 @@ export function omniCompareDevices(devices, { poolSameGame = false } = {}) {
     const specLine = (label, eng, id) => {
       if (!eng) return "";
       const vote = eng.contributes ? ("voting, weight " + pct(a.weights[id] || 0)) : "not voting yet";
-      const shown = eng.pR == null ? "—" : (eng.colour === "EVEN" ? "EVEN " + pct(0.5) : (eng.colour || "") + " " + pct(eng.pR));
-      return `<div class="ln"><span class="lab">${label}:</span> <b>${esc(shown)}</b> <small>${esc(vote)}</small></div>`;
+      const lean = leanDisplay(eng);
+      return `<div class="ln"><span class="lab">${label}:</span> <b class="${lean.cls}">${esc(lean.text)}</b> <small>${esc(vote)}</small></div>`;
     };
     html += specLine("ANTI-MAJORITY", e.antiMajority, "antiMajority");
     html += specLine("SHOE COUNT", e.shoe, "shoe");
@@ -3278,13 +3443,19 @@ export function omniCompareDevices(devices, { poolSameGame = false } = {}) {
   }
 
   function refresh() {
-    const a = lockNext();
+    const showAnswer = !!(log.length || hasSimpleAnswer);
+    const a = showAnswer ? lockNext() : E.omniAnalyze(seq(), analyzeOpts());
+    if (!showAnswer) pending = null;
     $("logCount").textContent = log.length + " logged";
     learning(a);
-    const lockedCall = a.prediction == null ? "NO EDGE — 50/50" : col(a.prediction);
-    $("lockedPreview").innerHTML = `<div class="ln big"><span class="lab">LOCKED CALL:</span> <b class="${a.prediction === "R" ? "r" : a.prediction === "B" ? "k" : ""}">${lockedCall}</b></div>
-      <div class="ln"><span class="lab">FINAL RED / BLACK:</span> ${pct(a.pRed)} / ${pct(a.pBlack)}</div>
-      <p class="small">This prediction is already locked. Entering a result will score it and will not change this call.</p>`;
+    const guess = (pending && pending.bestGuess) || bestGuessColor(a, seq());
+    const gSuit = pending && pending.guessSuit;
+    const lockedCall = col(guess);
+    const leanP = a.master && a.master.pShrunk != null ? a.master.pShrunk : a.pRed;
+    $("lockedPreview").innerHTML = `<div class="ln big"><span class="lab">LOCKED CALL:</span> <b class="${guess === "R" ? "r" : guess === "B" ? "k" : ""}">${lockedCall}</b></div>
+      ${gSuit ? `<div class="ln"><span class="lab">MOST LIKELY CARD:</span> ${esc(gSuit.name)} ${esc(gSuit.pip)} (${guess === "R" ? "red" : "black"})</div>` : ""}
+      <div class="ln"><span class="lab">ENSEMBLE P(RED) / P(BLACK):</span> ${pct(leanP)} / ${pct(1 - leanP)}</div>
+      <p class="small">${a.prediction ? "Published colour (proven edge). " : "Best guess — no proven edge yet. "}This pick is already locked. Entering a result will score it and will not change this call.</p>`;
     const st = streaks();
     const co = E.chanceOdds(st.cur);
     const cb = E.chanceOdds(st.best);
@@ -3298,11 +3469,19 @@ export function omniCompareDevices(devices, { poolSameGame = false } = {}) {
       const r50 = x.rolling && x.rolling[50];
       h += `<tr><td>${name}</td><td>${pct(x.acc)}</td><td>${x.n}</td><td>${x.ci ? pct(x.ci.lo) + "–" + pct(x.ci.hi) : "—"}</td><td>${x.brier == null ? "—" : x.brier.toFixed(4)}</td><td>${r50 ? pct(r50.acc) : "—"}</td></tr>`;
     }
-    $("dashTable").innerHTML = h;
+    const gs = guessStats();
+    h += `<tr><td>BEST GUESS (every shown pick)</td><td>${pct(gs.acc)}</td><td>${gs.n}</td><td>—</td><td>—</td><td>—</td></tr>`;
+    h += `<tr><td>EXACT CARD (vs 25% chance)</td><td>${pct(gs.suitAcc)}</td><td>${gs.suitN}</td><td>—</td><td>—</td><td>—</td></tr></table>`;
+    $("dashTable").innerHTML = h + `<p class="small">Best-guess accuracy scores every colour shown on the Predict screen, including guesses before a proven edge. Exact-card accuracy is scored only when you record the exact card, versus a 25% (1 in 4) chance baseline.</p>`;
 
     const hist = log.slice().reverse();
     $("histTable").innerHTML = "<table><tr><th>#</th><th>Locked</th><th>P(RED)</th><th>Actual</th><th>Hit?</th><th>Time</th></tr>" +
-      hist.map((e) => `<tr><td>${e.i}</td><td>${e.context ? "context" : (e.pred && e.pred.prediction ? col(e.pred.prediction) : "50/50")}</td><td>${e.context ? "—" : pct(e.pred && e.pred.pRed)}</td><td class="${e.color === "R" ? "r" : "k"}">${esc(formatActual(e))}</td><td>${e.context ? "context" : e.correct == null ? "no call" : e.correct ? "✔" : "✘"}</td><td>${e.ts ? new Date(e.ts).toLocaleString() : ""}</td></tr>`).join("") + "</table>";
+      hist.map((e) => {
+        const locked = e.context ? "context" : (e.pred && e.pred.bestGuess) ? col(e.pred.bestGuess) : (e.pred && e.pred.prediction ? col(e.pred.prediction) : "50/50");
+        const pShow = e.context ? "—" : pct(e.pred && (e.pred.pShrunk != null ? e.pred.pShrunk : e.pred.pRed));
+        const hit = e.context ? "context" : e.guessCorrect != null ? (e.guessCorrect ? "✔" : "✘") : (e.correct == null ? "no call" : e.correct ? "✔" : "✘");
+        return `<tr><td>${e.i}</td><td>${locked}</td><td>${pShow}</td><td class="${e.color === "R" ? "r" : "k"}">${esc(formatActual(e))}</td><td>${hit}</td><td>${e.ts ? new Date(e.ts).toLocaleString() : ""}</td></tr>`;
+      }).join("") + "</table>";
     $("logRecent").innerHTML = $("histTable").innerHTML;
 
     const sh = a.master.shrinkage;
@@ -3319,7 +3498,12 @@ export function omniCompareDevices(devices, { poolSameGame = false } = {}) {
     const archN = loadArchive().length;
     const ac = $("archiveCount");
     if (ac) ac.textContent = archN ? (archN + " past game" + (archN === 1 ? "" : "s") + " archived.") : "No past games archived yet.";
-    if (log.length) renderPanel(a, $("predictPanel"));
+    if (showAnswer) {
+      renderSimpleAnswer(a);
+      renderPanel(a, $("predictPanel"));
+    } else {
+      updatePredictLayout();
+    }
   }
 
   // tabs
@@ -3342,8 +3526,10 @@ export function omniCompareDevices(devices, { poolSameGame = false } = {}) {
     const a = E.omniAnalyze(seq(), analyzeOpts({ contextOverride: ctx.colors }));
     a.lastColours = ctx.colors.join("-");
     a.dataSupportText = E.formatDataSupport(E.dataSupport(seq().length ? seq() : ctx.colors, [3, 4, 5]));
+    if (!log.length) pending = lockRecord(a, ctx.colors, entriesForSuitPick());
+    hasSimpleAnswer = true;
+    renderSimpleAnswer(a);
     renderPanel(a, $("predictPanel"));
-    if (!log.length) pending = E.omniLockedRecord(a, Date.now());
   });
   $("btnClearSlots").addEventListener("click", () => { slots = [null, null, null, null, null]; renderSlots(); });
 
@@ -3407,7 +3593,7 @@ export function omniCompareDevices(devices, { poolSameGame = false } = {}) {
       if (colors.length) {
         const a = E.omniAnalyze([], { contextOverride: colors });
         a.lastColours = colors.join("-");
-        pending = E.omniLockedRecord(a, Date.now());
+        pending = lockRecord(a, colors, entriesForSuitPick());
         seedContextFromSlots();
       }
     }
@@ -3415,7 +3601,7 @@ export function omniCompareDevices(devices, { poolSameGame = false } = {}) {
     append(color, suit);
     const last = log[log.length - 1];
     const scoredN = log.filter((e) => !e.context).length;
-    const verdict = last.correct == null ? "no call" : last.correct ? "hit" : "miss";
+    const verdict = last.guessCorrect == null ? (last.correct == null ? "no call" : last.correct ? "hit" : "miss") : last.guessCorrect ? "hit" : "miss";
     showPredictToast("Logged #" + scoredN + " — " + verdict);
     syncSlotsFromLog();
     refresh();
@@ -3431,7 +3617,7 @@ export function omniCompareDevices(devices, { poolSameGame = false } = {}) {
 
   function exportCsv() {
     const dev = loadDevice();
-    const rows = ["index,color,suit,timestamp_iso,locked_prediction,locked_p_red,correct,master_significant,confidence_band,context,device_id,device_label"];
+    const rows = ["index,color,suit,timestamp_iso,locked_prediction,locked_p_red,correct,master_significant,confidence_band,context,device_id,device_label,best_guess,guess_correct,guess_suit,suit_correct"];
     for (const e of log) {
       rows.push([
         e.i, e.color, e.suit || "",
@@ -3443,6 +3629,10 @@ export function omniCompareDevices(devices, { poolSameGame = false } = {}) {
         (e.pred && e.pred.confidenceBand) || "",
         e.context ? 1 : 0,
         dev.id, JSON.stringify(dev.label),
+        (e.pred && e.pred.bestGuess) || "",
+        e.guessCorrect == null ? "" : e.guessCorrect ? 1 : 0,
+        (e.pred && e.pred.guessSuit && (e.pred.guessSuit.id || e.pred.guessSuit)) || "",
+        e.suitCorrect == null ? "" : e.suitCorrect ? 1 : 0,
       ].join(","));
     }
     const blob = new Blob([rows.join("\n")], { type: "text/csv" });
@@ -3589,6 +3779,7 @@ export function omniCompareDevices(devices, { poolSameGame = false } = {}) {
     const nArch = archiveCurrentGame();
     log = [];
     pending = null;
+    hasSimpleAnswer = false;
     slots = [null, null, null, null, null];
     save();
     renderSlots();
@@ -3596,6 +3787,8 @@ export function omniCompareDevices(devices, { poolSameGame = false } = {}) {
     if (panel) panel.innerHTML = `<p class="small">Enter at least three suits, then Predict.</p>`;
     const toast = $("predictToast");
     if (toast) { toast.textContent = ""; toast.classList.add("off"); }
+    if ($("answerColour")) $("answerColour").textContent = "—";
+    updatePredictLayout();
     refresh();
     return nArch;
   }
@@ -3606,6 +3799,7 @@ export function omniCompareDevices(devices, { poolSameGame = false } = {}) {
     $("newGameModal").classList.remove("on");
   }
   $("btnNewGame").addEventListener("click", openNewGameModal);
+  if ($("btnNewGamePredict")) $("btnNewGamePredict").addEventListener("click", openNewGameModal);
   $("btnNewCancel").addEventListener("click", closeNewGameModal);
   $("newGameModal").addEventListener("click", (ev) => { if (ev.target === $("newGameModal")) closeNewGameModal(); });
   $("btnNewConfirm").addEventListener("click", () => { closeNewGameModal(); startNewGame(false); });
@@ -3728,6 +3922,7 @@ export function omniCompareDevices(devices, { poolSameGame = false } = {}) {
   renderSlots();
   renderLogSuits();
   renderPredictResultSuits();
+  updatePredictLayout();
   refresh();
   renderCompare();
   </script>
